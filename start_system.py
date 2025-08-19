@@ -85,6 +85,16 @@ class SystemManager:
                     'STOCK_AGENT_URL': os.getenv('STOCK_AGENT_URL', 'http://localhost:8002'),
                     'MCP_SERVER_URL': os.getenv('MCP_SERVER_URL', 'http://localhost:8003')
                 }
+            },
+            'agent_monitor': {
+                'script': 'utils/agent_monitor.py',
+                'port': None,  # Monitor doesn't need a port
+                'name': 'Agent Monitor',
+                'env_vars': {
+                    'MASTER_AGENT_URL': os.getenv('MASTER_AGENT_URL', 'http://localhost:8001'),
+                    'STOCK_AGENT_URL': os.getenv('STOCK_AGENT_URL', 'http://localhost:8002'),
+                    'LOG_LEVEL': os.getenv('LOG_LEVEL', 'INFO')
+                }
             }
         }
     

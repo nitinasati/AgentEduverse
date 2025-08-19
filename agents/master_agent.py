@@ -102,9 +102,35 @@ class MasterAgent(BaseAgent):
         # Task queue for coordination
         self.task_queue = asyncio.Queue()
         
+        # Set scope boundaries for Master Agent
+        self.set_scope_boundaries({
+            'allowed_domains': [
+                'agent coordination', 'task routing', 'system management', 
+                'agent discovery', 'load balancing', 'health monitoring'
+            ],
+            'forbidden_actions': [
+                'execute financial transactions', 'make investment decisions',
+                'access sensitive data', 'modify system files', 'bypass security',
+                'perform unauthorized actions', 'access user credentials'
+            ],
+            'max_iterations': 5,
+            'timeout_seconds': 180,
+            'rate_limits': {
+                'requests_per_minute': 30,
+                'requests_per_hour': 500
+            }
+        })
+        
+        # Add specific forbidden actions
+        self.add_forbidden_action('execute stock trades')
+        self.add_forbidden_action('provide financial advice')
+        self.add_forbidden_action('access personal data')
+        self.add_forbidden_action('modify agent code')
+        
         self.logger.info("Master Agent initialized successfully", extra_data={
             'capabilities': self.capabilities,
-            'tools_count': len(self.tools)
+            'tools_count': len(self.tools),
+            'scope_boundaries': self.scope_boundaries
         })
     
     def _add_agent_management_tools(self):

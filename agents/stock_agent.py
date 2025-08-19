@@ -431,12 +431,40 @@ class StockAgent(BaseAgent):
         self.add_capability("technical_analysis")
         self.add_capability("news_analysis")
         
+        # Set scope boundaries for Stock Agent
+        self.set_scope_boundaries({
+            'allowed_domains': [
+                'stock analysis', 'financial data', 'investment research',
+                'technical analysis', 'market data', 'company analysis',
+                'financial statements', 'market trends'
+            ],
+            'forbidden_actions': [
+                'execute trades', 'place orders', 'access personal accounts',
+                'modify system files', 'bypass security', 'access user credentials',
+                'perform unauthorized actions', 'make actual investments'
+            ],
+            'max_iterations': 8,
+            'timeout_seconds': 240,
+            'rate_limits': {
+                'requests_per_minute': 20,
+                'requests_per_hour': 300
+            }
+        })
+        
+        # Add specific forbidden actions for financial safety
+        self.add_forbidden_action('execute buy orders')
+        self.add_forbidden_action('execute sell orders')
+        self.add_forbidden_action('access trading accounts')
+        self.add_forbidden_action('provide tax advice')
+        self.add_forbidden_action('guarantee returns')
+        
         # Add stock analysis tools
         self._add_stock_analysis_tools()
         
         self.logger.info("Stock Agent initialized successfully", extra_data={
             'capabilities': self.capabilities,
-            'mcp_server_url': mcp_server_url
+            'mcp_server_url': mcp_server_url,
+            'scope_boundaries': self.scope_boundaries
         })
     
     def _add_stock_analysis_tools(self):
@@ -671,6 +699,9 @@ class StockAgent(BaseAgent):
 app = FastAPI(title="Stock Agent API", version="1.0.0")
 stock_agent = None
 
+# Constants
+STOCK_AGENT_NOT_INITIALIZED = "Stock agent not initialized"
+
 class StockAnalysisRequest(BaseModel):
     symbol: str
     analysis_type: Optional[str] = "comprehensive"  # comprehensive, technical, financial, recommendation
@@ -684,10 +715,10 @@ async def startup_event():
 async def analyze_stock(request: StockAnalysisRequest):
     """Analyze a stock"""
     if not stock_agent:
-        stock_agent.logger.error("Stock agent not initialized", extra_data={
+        stock_agent.logger.error(STOCK_AGENT_NOT_INITIALIZED, extra_data={
             'step': 'agent_initialization_error'
         })
-        raise HTTPException(status_code=500, detail="Stock agent not initialized")
+        raise HTTPException(status_code=500, detail=STOCK_AGENT_NOT_INITIALIZED)
     
     try:
         stock_agent.logger.info(f"Analyzing stock: {request.symbol} with type: {request.analysis_type}", extra_data={
@@ -707,7 +738,7 @@ async def analyze_stock(request: StockAnalysisRequest):
         else:
             result = await stock_agent._analyze_stock(request.symbol)
         
-        stock_agent.logger.info(f"Analysis completed successfully", extra_data={
+        stock_agent.logger.info("Analysis completed successfully", extra_data={
             'symbol': request.symbol,
             'analysis_type': request.analysis_type,
             'result_length': len(str(result)),
@@ -734,7 +765,7 @@ async def analyze_stock(request: StockAnalysisRequest):
 async def health_check():
     """Health check endpoint"""
     if not stock_agent:
-        return {"status": "unhealthy", "error": "Stock agent not initialized"}
+        return {"status": "unhealthy", "error": STOCK_AGENT_NOT_INITIALIZED}
     
     try:
         health = await stock_agent.health_check()

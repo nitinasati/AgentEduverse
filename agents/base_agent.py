@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import boto3
 from langchain.llms import Bedrock
 from langchain.chat_models import BedrockChat
@@ -51,6 +51,29 @@ class BaseAgent:
         self.tools = []
         self.capabilities = []
         
+        # Scope and intent management
+        self.scope_boundaries = {
+            'allowed_domains': [],
+            'forbidden_actions': [],
+            'max_iterations': 10,
+            'timeout_seconds': 300,
+            'rate_limits': {
+                'requests_per_minute': 60,
+                'requests_per_hour': 1000
+            }
+        }
+        
+        # Safety and validation
+        self.safety_checks = {
+            'input_validation': True,
+            'output_filtering': True,
+            'intent_verification': True,
+            'scope_enforcement': True
+        }
+        
+        # Rate limiting
+        self.request_history = []
+        
         self.logger.info(f"Base agent {agent_name} initialized", extra_data={
             'agent_name': agent_name,
             'description': agent_description
@@ -93,17 +116,42 @@ class BaseAgent:
         })
     
     async def process_message(self, message: str, session_id: str = None) -> Dict[str, Any]:
-        """Process a message and return response"""
+        """Process a message and return response with scope validation"""
         try:
             if not session_id:
                 session_id = str(uuid.uuid4())
-                
+            
+            # Record request for rate limiting
+            self.request_history.append(datetime.now())
+            
             self.logger.info("Processing message", extra_data={
                 'message_length': len(message),
                 'session_id': session_id,
                 'agent_name': self.agent_name,
                 'step': 'message_received'
             })
+            
+            # Input validation
+            if self.safety_checks['input_validation']:
+                validation_result = self.validate_input(message)
+                if not validation_result['is_valid']:
+                    self.logger.warning(f"Input validation failed for {self.agent_name}", extra_data={
+                        'errors': validation_result['errors'],
+                        'session_id': session_id
+                    })
+                    return {
+                        "agent": self.agent_name,
+                        "error": f"Input validation failed: {'; '.join(validation_result['errors'])}",
+                        "warnings": validation_result['warnings'],
+                        "session_id": session_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                
+                if validation_result['warnings']:
+                    self.logger.warning(f"Input validation warnings for {self.agent_name}", extra_data={
+                        'warnings': validation_result['warnings'],
+                        'session_id': session_id
+                    })
             
             # Log message content for debugging
             self.logger.debug("Message content", extra_data={
@@ -138,6 +186,23 @@ class BaseAgent:
                 'step': 'llm_response'
             })
             
+            # Intent verification
+            intent_result = {'aligned': True, 'confidence': 1.0, 'concerns': []}
+            if self.safety_checks['intent_verification']:
+                intent_result = self.verify_intent(message, response)
+                if not intent_result['aligned']:
+                    self.logger.warning(f"Intent verification failed for {self.agent_name}", extra_data={
+                        'concerns': intent_result['concerns'],
+                        'confidence': intent_result['confidence'],
+                        'session_id': session_id
+                    })
+                    # Modify response to include warning
+                    response = f"⚠️ SCOPE WARNING: {intent_result['concerns'][0]}\n\n{response}"
+            
+            # Output filtering
+            if self.safety_checks['output_filtering']:
+                response = self.filter_output(response)
+            
             # Update state
             self.logger.info("Updating state")
             self.state['last_message'] = message
@@ -155,7 +220,12 @@ class BaseAgent:
                 'agent': self.agent_name,
                 'response': response,
                 'session_id': session_id,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'validation': {
+                    'input_valid': validation_result.get('is_valid', True),
+                    'intent_aligned': intent_result.get('aligned', True),
+                    'confidence': intent_result.get('confidence', 1.0)
+                }
             }
             
         except Exception as e:
@@ -244,3 +314,126 @@ class BaseAgent:
         """Cleanup resources"""
         self.logger.info(f"Cleaning up agent {self.agent_name}")
         # Add any cleanup logic here
+
+    def set_scope_boundaries(self, boundaries: Dict[str, Any]):
+        """Set scope boundaries for the agent"""
+        self.scope_boundaries.update(boundaries)
+        self.logger.info(f"Scope boundaries updated for {self.agent_name}", extra_data={
+            'boundaries': boundaries
+        })
+    
+    def add_forbidden_action(self, action: str):
+        """Add a forbidden action to the scope boundaries"""
+        self.scope_boundaries['forbidden_actions'].append(action)
+        self.logger.info(f"Forbidden action added: {action}", extra_data={
+            'action': action
+        })
+    
+    def add_allowed_domain(self, domain: str):
+        """Add an allowed domain to the scope boundaries"""
+        self.scope_boundaries['allowed_domains'].append(domain)
+        self.logger.info(f"Allowed domain added: {domain}", extra_data={
+            'domain': domain
+        })
+    
+    def validate_input(self, message: str) -> Dict[str, Any]:
+        """Validate input against scope boundaries"""
+        validation_result = {
+            'is_valid': True,
+            'warnings': [],
+            'errors': []
+        }
+        
+        # Check for forbidden actions
+        for forbidden_action in self.scope_boundaries['forbidden_actions']:
+            if forbidden_action.lower() in message.lower():
+                validation_result['is_valid'] = False
+                validation_result['errors'].append(f"Forbidden action detected: {forbidden_action}")
+        
+        # Check domain relevance
+        if self.scope_boundaries['allowed_domains']:
+            domain_match = False
+            for domain in self.scope_boundaries['allowed_domains']:
+                if domain.lower() in message.lower():
+                    domain_match = True
+                    break
+            
+            if not domain_match:
+                validation_result['warnings'].append("Input may be outside agent's primary domain")
+        
+        # Rate limiting check
+        if not self._check_rate_limits():
+            validation_result['is_valid'] = False
+            validation_result['errors'].append("Rate limit exceeded")
+        
+        return validation_result
+    
+    def _check_rate_limits(self) -> bool:
+        """Check if rate limits are exceeded"""
+        now = datetime.now()
+        minute_ago = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        hour_ago = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        
+        # Clean old requests
+        self.request_history = [req for req in self.request_history if req > minute_ago]
+        
+        # Check minute limit
+        minute_requests = len([req for req in self.request_history if req > minute_ago])
+        if minute_requests >= self.scope_boundaries['rate_limits']['requests_per_minute']:
+            return False
+        
+        # Check hour limit
+        hour_requests = len([req for req in self.request_history if req > hour_ago])
+        if hour_requests >= self.scope_boundaries['rate_limits']['requests_per_hour']:
+            return False
+        
+        return True
+    
+    def verify_intent(self, message: str, response: str) -> Dict[str, Any]:
+        """Verify that the response aligns with the agent's intent"""
+        intent_result = {
+            'aligned': True,
+            'confidence': 0.0,
+            'concerns': []
+        }
+        
+        # Check if response stays within agent's description
+        agent_keywords = self.agent_description.lower().split()
+        response_lower = response.lower()
+        
+        # Calculate alignment score
+        keyword_matches = sum(1 for keyword in agent_keywords if keyword in response_lower)
+        alignment_score = keyword_matches / len(agent_keywords) if agent_keywords else 0
+        
+        intent_result['confidence'] = alignment_score
+        
+        if alignment_score < 0.3:
+            intent_result['aligned'] = False
+            intent_result['concerns'].append("Response appears to deviate from agent's primary purpose")
+        
+        # Check for scope violations
+        if self.scope_boundaries['forbidden_actions']:
+            for forbidden_action in self.scope_boundaries['forbidden_actions']:
+                if forbidden_action.lower() in response_lower:
+                    intent_result['aligned'] = False
+                    intent_result['concerns'].append(f"Response contains forbidden action: {forbidden_action}")
+        
+        return intent_result
+    
+    def filter_output(self, response: str) -> str:
+        """Filter and sanitize output"""
+        if not self.safety_checks['output_filtering']:
+            return response
+        
+        # Remove potentially sensitive information
+        sensitive_patterns = [
+            r'\b\d{3}-\d{2}-\d{4}\b',  # SSN
+            r'\b\d{4}-\d{4}-\d{4}-\d{4}\b',  # Credit card
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Email
+        ]
+        
+        import re
+        for pattern in sensitive_patterns:
+            response = re.sub(pattern, '[REDACTED]', response)
+        
+        return response
